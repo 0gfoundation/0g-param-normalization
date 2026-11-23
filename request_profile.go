@@ -102,7 +102,9 @@ func applyRequestProfile(body []byte, profile, surface string) ([]byte, []Change
 
 	modified, err := json.Marshal(bodyMap)
 	if err != nil {
-		return body, nil, fmt.Errorf("failed to marshal request-profile body: %w", err)
+		// The drops are still reported: in DryRun (the broker's log-only mode)
+		// the body is never re-encoded, so they must be logged regardless.
+		return body, dropped, fmt.Errorf("failed to marshal request-profile body: %w", err)
 	}
 	return modified, dropped, nil
 }

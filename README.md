@@ -42,8 +42,12 @@ so every enforcement point turns categories on one at a time, and can measure
 first. The zero `Options` changes nothing. The order of the steps is fixed
 inside the library. Resolving which row a request targets is the caller's job.
 
-`AdvertisedSupportedParameters` is the one other export: what a row lists in
-`/v1/models`.
+Each `Change` names the `Step` that produced it. An error is a `*StepError`
+naming the step that failed; a `DryRun` category never fails the request.
+
+`Sanitize` (engine-control fields; independent of the row) and
+`AdvertisedSupportedParameters` (what a row lists in `/v1/models`) are the
+other entry points.
 
 ## Rules
 

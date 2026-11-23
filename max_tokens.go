@@ -97,7 +97,7 @@ func translateMaxTokens(body []byte, row *Row) ([]byte, []Change, error) {
 
 	modified, err := json.Marshal(bodyMap)
 	if err != nil {
-		return body, nil, fmt.Errorf("failed to marshal max-tokens-translated body: %w", err)
+		return body, []Change{change}, fmt.Errorf("failed to marshal max-tokens-translated body: %w", err)
 	}
 	return modified, []Change{change}, nil
 }
