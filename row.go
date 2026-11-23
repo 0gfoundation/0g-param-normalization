@@ -20,4 +20,13 @@ type Row struct {
 	// ThinkingTypes lists the `thinking.type` values the row accepts on the
 	// OpenAI surface, if it declares any.
 	ThinkingTypes []string
+	// MaxCompletionTokens is the row's advertised output-token limit; 0 means
+	// none. Options.CapOutput clamps requests to it.
+	MaxCompletionTokens int
+	// ContextLength is the row's context window in tokens; 0 means unknown.
+	ContextLength int
+	// RequestProfile names the upstream engine's request schema (e.g.
+	// RequestProfileSGLang), whose unaccepted optional values are dropped.
+	// Empty means none.
+	RequestProfile string
 }

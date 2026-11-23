@@ -54,7 +54,7 @@ func TestNativeReasoningParam(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			row := newTestRow(tt.params...)
-			if got := NativeReasoningParam(row); got != tt.want {
+			if got := nativeReasoningParam(row); got != tt.want {
 				t.Errorf("nativeReasoningParam() = %q, want %q", got, tt.want)
 			}
 		})
@@ -85,7 +85,7 @@ func TestTranslateReasoning_EffortOn(t *testing.T) {
 	row := newTestRow("reasoning_effort", "chat_template_kwargs")
 	body := []byte(`{"model":"qwen3","reasoning_effort":"high","messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestTranslateReasoning_EffortOff(t *testing.T) {
 	row := newTestRow("reasoning_effort", "chat_template_kwargs")
 	body := []byte(`{"model":"qwen3","reasoning_effort":"none","messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestTranslateReasoning_Unset(t *testing.T) {
 	row := newTestRow("reasoning_effort", "chat_template_kwargs")
 	body := []byte(`{"model":"qwen3","messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestTranslateReasoning_ExplicitNativeWins(t *testing.T) {
 	// native value must survive and reasoning_effort must not override it.
 	body := []byte(`{"model":"qwen3","reasoning_effort":"high","chat_template_kwargs":{"enable_thinking":false},"messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestTranslateReasoning_NoNativeParamPassthrough(t *testing.T) {
 	row := newTestRow("reasoning_effort")
 	body := []byte(`{"model":"qwen3","reasoning_effort":"high","messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestTranslateReasoning_PreservesExistingChatTemplateKwargs(t *testing.T) {
 	row := newTestRow("reasoning_effort", "chat_template_kwargs")
 	body := []byte(`{"model":"qwen3","reasoning_effort":"low","chat_template_kwargs":{"foo":"bar"},"messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestTranslateReasoning_ChatTemplateEffortIsExplicit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"glm-5.3","reasoning_effort":"` + tt.effort +
 				`","chat_template_kwargs":{"reasoning_effort":"` + tt.nested + `"},"messages":[]}`)
-			got, err := TranslateReasoning(body, row)
+			got, _, err := translateReasoning(body, row)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -317,7 +317,7 @@ func TestTranslateReasoning_GradedChatTemplateEffort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"glm-5.3","reasoning_effort":"` + tt.effort + `","messages":[]}`)
-			got, err := TranslateReasoning(body, row)
+			got, _, err := translateReasoning(body, row)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -347,7 +347,7 @@ func TestTranslateReasoning_NoDeclaredLevelsStaysBinary(t *testing.T) {
 	for _, effort := range []string{"low", "medium", "high", "max"} {
 		t.Run(effort, func(t *testing.T) {
 			body := []byte(`{"model":"qwen3","reasoning_effort":"` + effort + `","messages":[]}`)
-			got, err := TranslateReasoning(body, row)
+			got, _, err := translateReasoning(body, row)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -374,7 +374,7 @@ func TestTranslateReasoning_GradedRespectsExplicitNested(t *testing.T) {
 		"reasoning_effort", "chat_template_kwargs")
 	body := []byte(`{"model":"glm-5.3","reasoning_effort":"none","chat_template_kwargs":{"reasoning_effort":"max"},"messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestNativeReasoningParam_PreserveThinkingNotAToggle(t *testing.T) {
 	// preserve_thinking is a multi-turn context flag, not an on/off toggle, so it
 	// must not be picked as a translation target.
 	row := newTestRow("temperature", "preserve_thinking")
-	if got := NativeReasoningParam(row); got != "" {
+	if got := nativeReasoningParam(row); got != "" {
 		t.Errorf("nativeReasoningParam() = %q, want \"\" (preserve_thinking is not a toggle)", got)
 	}
 }
@@ -409,7 +409,7 @@ func TestNativeReasoningParam_AnthropicThinkingExcluded(t *testing.T) {
 		SupportedParameters: []string{"max_tokens", "thinking"},
 		SupportedFormats:    []string{"anthropic"},
 	}
-	if got := NativeReasoningParam(row); got != "" {
+	if got := nativeReasoningParam(row); got != "" {
 		t.Errorf("nativeReasoningParam() = %q, want \"\" (Anthropic-surface thinking requires budget_tokens)", got)
 	}
 }
@@ -447,7 +447,7 @@ func TestTranslateReasoning_AnthropicThinkingPassthrough(t *testing.T) {
 		SupportedFormats:    []string{"anthropic"},
 	}
 	body := []byte(`{"model":"claude-opus-4-8","reasoning_effort":"high","messages":[]}`)
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestTranslateReasoning_TopLevelEnableThinking(t *testing.T) {
 	row := newTestRow("reasoning_effort", "enable_thinking")
 	body := []byte(`{"model":"qwen3","reasoning_effort":"high","messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestTranslateReasoning_MiniMaxThinkingObject(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.effort, func(t *testing.T) {
 			body := []byte(`{"model":"MiniMax-M2.7","reasoning_effort":"` + tt.effort + `","messages":[]}`)
-			got, err := TranslateReasoning(body, row)
+			got, _, err := translateReasoning(body, row)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -531,7 +531,7 @@ func TestTranslateReasoning_OpenRouterReasoningObject(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.effort, func(t *testing.T) {
 			body := []byte(`{"model":"deepseek-v4-flash","reasoning_effort":"` + tt.effort + `","messages":[]}`)
-			got, err := TranslateReasoning(body, row)
+			got, _, err := translateReasoning(body, row)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -560,7 +560,7 @@ func TestTranslateReasoning_OpenRouterPreservesExistingReasoningFields(t *testin
 	// applies and the field is preserved through the merge.
 	body := []byte(`{"model":"deepseek-v4-flash","reasoning_effort":"high","reasoning":{"exclude":true},"messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestTranslateReasoning_OpenRouterEffortAndMaxTokensAreExplicit(t *testing.T
 			// A stale/conflicting reasoning_effort must not override the client's
 			// own explicit OpenRouter-native control.
 			body := []byte(`{"model":"deepseek-v4-flash","reasoning_effort":"none","reasoning":{` + tt.sub + `},"messages":[]}`)
-			got, err := TranslateReasoning(body, row)
+			got, _, err := translateReasoning(body, row)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -623,7 +623,7 @@ func TestTranslateReasoning_OpenRouterExplicitNativeWins(t *testing.T) {
 	// Client sets reasoning directly AND a high effort; explicit native must win.
 	body := []byte(`{"model":"deepseek-v4-flash","reasoning_effort":"high","reasoning":{"enabled":false},"messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestTranslateReasoning_PreservesLargeIntegers(t *testing.T) {
 	row := newTestRow("reasoning_effort", "chat_template_kwargs")
 	body := []byte(`{"model":"qwen3","reasoning_effort":"high","seed":9007199254740993,"messages":[]}`)
 
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -734,7 +734,7 @@ func TestTranslateReasoning_PreservesLargeIntegers(t *testing.T) {
 
 func TestTranslateReasoning_EmptyBody(t *testing.T) {
 	row := newTestRow("reasoning_effort", "chat_template_kwargs")
-	got, err := TranslateReasoning(nil, row)
+	got, _, err := translateReasoning(nil, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -746,7 +746,7 @@ func TestTranslateReasoning_EmptyBody(t *testing.T) {
 func TestNativeReasoningParam_NilModelInfo(t *testing.T) {
 	// A nil row advertises nothing, so no native reasoning param can be resolved.
 	var row *Row
-	if got := NativeReasoningParam(row); got != "" {
+	if got := nativeReasoningParam(row); got != "" {
 		t.Errorf("nativeReasoningParam() = %q, want \"\" when row is nil", got)
 	}
 }
@@ -754,7 +754,7 @@ func TestNativeReasoningParam_NilModelInfo(t *testing.T) {
 func TestTranslateReasoning_NonJSONUnchanged(t *testing.T) {
 	row := newTestRow("reasoning_effort", "chat_template_kwargs")
 	body := []byte(`not json`)
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -823,7 +823,7 @@ func TestTranslateReasoning_DeclaredThinkingTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"MiniMax-M3","reasoning_effort":"` + tt.effort + `","messages":[]}`)
-			got, err := TranslateReasoning(body, newRow(tt.types...))
+			got, _, err := translateReasoning(body, newRow(tt.types...))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -855,7 +855,7 @@ func TestTranslateReasoning_DeclaredThinkingTypesExplicitNativeWins(t *testing.T
 	row := newTestRow("reasoning_effort", "thinking")
 	row.ThinkingTypes = []string{"adaptive", "disabled"}
 	body := []byte(`{"model":"MiniMax-M3","reasoning_effort":"high","thinking":{"type":"disabled"},"messages":[]}`)
-	got, err := TranslateReasoning(body, row)
+	got, _, err := translateReasoning(body, row)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
