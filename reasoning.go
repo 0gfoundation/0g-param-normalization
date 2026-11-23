@@ -1,0 +1,477 @@
+package paramnorm
+
+// This file implements reasoning-parameter translation: re-expressing a client's
+// portable OpenAI `reasoning_effort` as the upstream-native "thinking" control
+// the target model understands (e.g. Qwen3/vLLM's chat_template_kwargs.
+// enable_thinking). The translation target is picked from the model's advertised
+// supportedParameters; the per-dialect mechanics live in the switch in
+// applyNativeReasoning. See docs/design/reasoning-translation.md.
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// reasoningEffortKey is the portable OpenAI field the broker translates FROM. It
+// is never a translation target — only an input.
+const reasoningEffortKey = "reasoning_effort"
+
+// isNativeReasoningParam reports whether a supportedParameters entry names an
+// upstream-native thinking control the broker can translate to. This set is the
+// counterpart of the switch in applyNativeReasoning: every name here must have a
+// case there, and vice versa.
+//
+// Note the advertised name is the wire parameter the model accepts, which is not
+// always the toggle key itself: a Qwen3/GLM model on vLLM advertises the
+// container "chat_template_kwargs" and the thinking toggle lives in its nested
+// "enable_thinking" key (see applyNativeReasoning).
+//
+// "preserve_thinking" (advertised by DeepSeek/Qwen on DashScope) is deliberately
+// NOT recognized: it is not an on/off toggle but a multi-turn flag that keeps
+// prior turns' reasoning in context. The DashScope thinking toggle is a top-level
+// "enable_thinking" instead.
+func isNativeReasoningParam(name string) bool {
+	switch name {
+	case nativeParamChatTemplateKwargs, nativeParamEnableThinking, nativeParamThinking, nativeParamReasoning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Native thinking-control parameter names the broker can translate reasoning_effort into.
+const (
+	// nativeParamChatTemplateKwargs is the container Qwen3/GLM models on
+	// vLLM/SGLang advertise; the thinking toggle is its nested enable_thinking
+	// bool, and a model declaring reasoningEffortLevels also takes a graded
+	// reasoning_effort there (see resolveChatTemplateEffort).
+	nativeParamChatTemplateKwargs = ParamChatTemplateKwargs
+	// nativeParamEnableThinking is the top-level bool DashScope (Aliyun) accepts
+	// as an extra_body key — distinct from the vLLM nested form above.
+	nativeParamEnableThinking = "enable_thinking"
+	// nativeParamThinking is the OpenAI-surface object control MiniMax and Zhipu
+	// GLM take: {"type": …}. Which type values turn thinking on and off is a
+	// property of the model, not of the dialect (see resolveThinkingType).
+	nativeParamThinking = ParamThinking
+	// nativeParamReasoning is OpenRouter's unified object control:
+	// {"enabled": bool}. OpenRouter also accepts an "effort" (low|medium|high) or
+	// "max_tokens" sub-field for finer-grained control, but the broker's intent is
+	// only ever binary (see reasoningIntent), so "enabled" is the only sub-field
+	// the broker writes.
+	nativeParamReasoning = "reasoning"
+
+	// enableThinkingKey is the toggle key NESTED under chat_template_kwargs (the
+	// vLLM/SGLang dialect). It coincidentally shares the literal "enable_thinking"
+	// with nativeParamEnableThinking above, but the two play different roles — this
+	// is a key inside a container, that is a top-level advertised param / wire key —
+	// so they are deliberately kept as separate constants.
+	enableThinkingKey = "enable_thinking"
+	// chatTemplateEffortKey is the graded depth key NESTED under
+	// chat_template_kwargs, used by GLM-5.2/5.3-style templates ("low"/"high",
+	// anything else meaning maximum depth) as an alternative to the
+	// enable_thinking bool. Like enableThinkingKey above it shares its literal
+	// with a top-level field — the portable reasoningEffortKey — while playing a
+	// different role: this is a chat-template variable the upstream reads, that is
+	// the OpenAI field the broker translates FROM. Kept separate for the same
+	// reason. The broker never writes this key (its intent is binary, see
+	// reasoningIntent); it only recognizes a client's own use of it.
+	chatTemplateEffortKey = "reasoning_effort"
+)
+
+// requiresAnthropicBudgetTokens reports whether formats declare the genuine
+// Anthropic /v1/messages surface (APIFormatAnthropic). On that surface
+// the native "thinking" control is Anthropic's own — {"type": "enabled",
+// "budget_tokens": N} — where budget_tokens is mandatory and the broker has no
+// basis to compute it, unlike MiniMax/Zhipu's plain {"type": "enabled"} on the
+// OpenAI surface: same advertised name ("thinking"), incompatible dialects.
+// "thinking" is therefore excluded as a translation target for any model that
+// declares the Anthropic surface, and left off the advertised-parameters
+// addition in AdvertisedSupportedParameters.
+//
+// This check is model-wide (keyed on config, not the current request's
+// surface) and an omitted supportedFormats is treated as NOT requiring
+// budget_tokens — two deliberate scope decisions with edge cases; see
+// docs/design/reasoning-translation.md for the full rationale and what's
+// intentionally left unhandled. Matching is case-insensitive and
+// whitespace-trimmed, mirroring proxy.go's formatAllowed, since
+// ModelInfo.Validate accepts (and does not normalize) a raw config value like
+// " Anthropic" as long as it trims/folds to a known format.
+func requiresAnthropicBudgetTokens(formats []string) bool {
+	for _, f := range formats {
+		if strings.EqualFold(strings.TrimSpace(f), APIFormatAnthropic) {
+			return true
+		}
+	}
+	return false
+}
+
+// reasoningIntent is the binary thinking on/off decision derived from the
+// client's reasoning_effort. Unset means the client expressed no preference, so
+// the broker emits nothing and the upstream default stands.
+type reasoningIntent int
+
+const (
+	reasoningUnset reasoningIntent = iota
+	reasoningOff
+	reasoningOn
+)
+
+// normalizeReasoningEffort maps an OpenAI reasoning_effort value to a binary
+// intent. Any non-empty effort other than "none"/"minimal" turns thinking on;
+// "none"/"minimal" turn it off; absent leaves it unset.
+func normalizeReasoningEffort(effort string) reasoningIntent {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "":
+		return reasoningUnset
+	case "none", "minimal":
+		return reasoningOff
+	default:
+		return reasoningOn
+	}
+}
+
+// resolveChatTemplateEffort maps a client's reasoning_effort onto the value to
+// write into chat_template_kwargs.reasoning_effort, given the levels the model's
+// chat template declares (Row.ReasoningEffortLevels). It returns "" when the
+// model declares no levels, or when the client's value is off the ladder entirely:
+// the broker then writes only the enable_thinking bool, exactly as it did before
+// this knob existed, and the upstream's own default depth stands.
+//
+// Resolution picks the deepest declared level that does not exceed the request,
+// and the shallowest declared level when the request is shallower than everything
+// declared. Two properties motivate that rule rather than passing the client's
+// value through verbatim:
+//
+//   - Monotone. A template resolves a value it does not recognize to its maximum
+//     depth, so verbatim forwarding inverts OpenAI's ordering: GLM-5.3 takes
+//     low/high/max, and a verbatim "medium" would there mean MORE thinking than
+//     "high".
+//   - Biased shallow. Reasoning tokens are billed as output, so an unrepresentable
+//     request resolves down whenever the template offers anything at or below it —
+//     never charging for depth nobody asked for. It resolves UP only when the
+//     request is shallower than every declared level, where the alternative
+//     (writing nothing) would leave the upstream's own default, which is deeper
+//     still: on GLM-5.2's high/max a client asking for "low" is better served by
+//     "high" than by the default "max".
+func resolveChatTemplateEffort(effort string, declared []string) string {
+	if len(declared) == 0 {
+		return ""
+	}
+	want, ok := ReasoningEffortRank(effort)
+	if !ok {
+		return ""
+	}
+	deepestBelow, shallowest := -1, len(ReasoningEffortLadder)
+	for _, level := range declared {
+		rank, known := ReasoningEffortRank(level)
+		if !known {
+			continue
+		}
+		if rank <= want && rank > deepestBelow {
+			deepestBelow = rank
+		}
+		if rank < shallowest {
+			shallowest = rank
+		}
+	}
+	// Answer with the canonical ladder spelling rather than echoing the config
+	// string, so a "Low" in config still reaches the template as "low".
+	if deepestBelow >= 0 {
+		return ReasoningEffortLadder[deepestBelow]
+	}
+	if shallowest < len(ReasoningEffortLadder) {
+		return ReasoningEffortLadder[shallowest]
+	}
+	return ""
+}
+
+// resolveThinkingType picks the thinking.type to write for a binary intent,
+// given the values the model declares (Row.ThinkingTypes). It returns ""
+// when the model declares no value for the intent — an upstream that cannot turn
+// thinking off — and the caller then forwards the request untouched.
+//
+// A model that declares nothing gets the pair the broker has always written,
+// "enabled"/"disabled", so models configured before the knob existed are
+// translated exactly as before. With a declaration, on prefers "adaptive" over
+// "enabled": it is the value every MiniMax model accepts (MiniMax-M3 rejects
+// "enabled"), and it leaves the depth to the model, as "enabled" does.
+func resolveThinkingType(on bool, declared []string) string {
+	if len(declared) == 0 {
+		if on {
+			return ThinkingTypeEnabled
+		}
+		return ThinkingTypeDisabled
+	}
+	has := func(want string) bool {
+		for _, t := range declared {
+			if n, _ := NormalizeThinkingType(t); n == want {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case !on && has(ThinkingTypeDisabled):
+		return ThinkingTypeDisabled
+	case on && has(ThinkingTypeAdaptive):
+		return ThinkingTypeAdaptive
+	case on && has(ThinkingTypeEnabled):
+		return ThinkingTypeEnabled
+	}
+	return ""
+}
+
+// AdvertisedSupportedParameters returns supportedParameters as it should appear in
+// the GET /v1/models response. When the model advertises a native thinking toggle
+// the broker can translate into (chat_template_kwargs / enable_thinking / thinking /
+// reasoning) but not the portable "reasoning_effort" itself, reasoning_effort is
+// appended so OpenAI-schema clients discover they can use it — the broker accepts
+// it via translation (see TranslateReasoning). formats is the model's
+// SupportedFormats: a "thinking" advertisement on the Anthropic surface is not
+// counted (see requiresAnthropicBudgetTokens) since the broker cannot translate it.
+//
+// The input slice is never mutated, and the config value used by nativeReasoningParam
+// for detection is unaffected: only the advertised view gains the field, keeping
+// "broker can translate reasoning_effort" ⇔ "reasoning_effort is advertised" true.
+func AdvertisedSupportedParameters(params []string, formats []string) []string {
+	anthropicThinking := requiresAnthropicBudgetTokens(formats)
+	hasNative, hasEffort := false, false
+	for _, p := range params {
+		if p == reasoningEffortKey {
+			hasEffort = true
+			continue
+		}
+		if p == nativeParamThinking && anthropicThinking {
+			continue
+		}
+		if isNativeReasoningParam(p) {
+			hasNative = true
+		}
+	}
+	if !hasNative || hasEffort {
+		return params
+	}
+	out := make([]string, len(params), len(params)+1)
+	copy(out, params)
+	return append(out, reasoningEffortKey)
+}
+
+// NativeReasoningParam returns the upstream-native thinking control the row
+// advertises in SupportedParameters (e.g. "enable_thinking"), or "" if it
+// advertises none that can be translated to (or row is nil). A "thinking"
+// advertisement on the Anthropic surface is skipped — see
+// requiresAnthropicBudgetTokens.
+func NativeReasoningParam(row *Row) string {
+	if row == nil {
+		return ""
+	}
+	anthropicThinking := requiresAnthropicBudgetTokens(row.SupportedFormats)
+	for _, p := range row.SupportedParameters {
+		if p == nativeParamThinking && anthropicThinking {
+			continue
+		}
+		if isNativeReasoningParam(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// nativeReasoningParamSet reports whether the client already set the native
+// parameter in its wire location. When true the broker leaves it untouched
+// (explicit native parameter wins over a derived reasoning_effort).
+func nativeReasoningParamSet(bodyMap map[string]interface{}, nativeParam string) bool {
+	switch nativeParam {
+	case nativeParamChatTemplateKwargs:
+		// vLLM/SGLang: "enable_thinking" is the sub-field the broker itself writes,
+		// but a GLM-5.2/5.3-style template exposes the same on/off-implying concept
+		// as a graded "reasoning_effort" instead. Treating only enable_thinking as
+		// explicit would let the broker write enable_thinking:false into the very
+		// same map as a client's reasoning_effort:"high" — the template then reads
+		// both and thinking is off, silently inverting an explicit client request.
+		// Either sub-field being present therefore means the client already
+		// addressed reasoning natively, mirroring the reasoning object below.
+		kw, ok := bodyMap[nativeParamChatTemplateKwargs].(map[string]interface{})
+		if !ok {
+			return false
+		}
+		for _, sub := range []string{enableThinkingKey, chatTemplateEffortKey} {
+			if _, present := kw[sub]; present {
+				return true
+			}
+		}
+		return false
+	case nativeParamReasoning:
+		// OpenRouter: "enabled" is the sub-field the broker itself writes, but a
+		// client may instead address the same on/off concept via "effort" (its
+		// own low|medium|high control) or "max_tokens" (implies reasoning is on).
+		// Treating only "enabled" as explicit would let the broker layer a
+		// derived "enabled": false next to a client's "effort": "high" in the
+		// same object — a contradictory hint to OpenRouter. Any of the three
+		// sub-fields being present means the client already addressed reasoning
+		// natively, mirroring chat_template_kwargs's nested-key check.
+		r, ok := bodyMap[nativeParamReasoning].(map[string]interface{})
+		if !ok {
+			return false
+		}
+		for _, sub := range []string{"enabled", "effort", "max_tokens"} {
+			if _, present := r[sub]; present {
+				return true
+			}
+		}
+		return false
+	default:
+		// Top-level params (enable_thinking, thinking): present iff the key exists.
+		_, present := bodyMap[nativeParam]
+		return present
+	}
+}
+
+// applyNativeReasoning writes the native thinking control for `on` into bodyMap,
+// in the wire location the upstream dialect expects, and reports whether it wrote
+// anything. Each case owns its own value shape (bool, or an object). The values
+// themselves are fixed by the dialect, except the `thinking` object's type, which
+// is per model and arrives resolved as thinkingType. A name handled here must
+// also be recognized by isNativeReasoningParam; the bool return guards
+// TranslateReasoning against dropping reasoning_effort when nothing was written.
+func applyNativeReasoning(bodyMap map[string]interface{}, nativeParam string, on bool, chatTemplateEffort, thinkingType string) bool {
+	switch nativeParam {
+	case nativeParamChatTemplateKwargs:
+		// Qwen3/GLM on vLLM/SGLang: bool nested under chat_template_kwargs.
+		// Preserve any other kwargs the client already set.
+		kw, ok := bodyMap[nativeParamChatTemplateKwargs].(map[string]interface{})
+		if !ok {
+			kw = map[string]interface{}{}
+			bodyMap[nativeParamChatTemplateKwargs] = kw
+		}
+		kw[enableThinkingKey] = on
+		// A model that declares its levels also gets the graded depth (resolved by
+		// resolveChatTemplateEffort). Both keys are written: a template that reads
+		// only enable_thinking is unaffected by the extra kwarg, and one that reads
+		// both applies the bool as the gate and the level as the depth.
+		if chatTemplateEffort != "" {
+			kw[chatTemplateEffortKey] = chatTemplateEffort
+		}
+		return true
+	case nativeParamEnableThinking:
+		// DashScope (Aliyun): top-level bool.
+		bodyMap[nativeParamEnableThinking] = on
+		return true
+	case nativeParamThinking:
+		// MiniMax / Zhipu GLM: object {"type": thinkingType}, the value already
+		// resolved for this model and intent (resolveThinkingType). "" means the
+		// model has no value for the intent: write nothing.
+		if thinkingType == "" {
+			return false
+		}
+		bodyMap[nativeParamThinking] = map[string]interface{}{"type": thinkingType}
+		return true
+	case nativeParamReasoning:
+		// OpenRouter: object {"enabled": bool}. Preserve any other sub-fields the
+		// client already set (e.g. max_tokens), mirroring chat_template_kwargs.
+		r, ok := bodyMap[nativeParamReasoning].(map[string]interface{})
+		if !ok {
+			r = map[string]interface{}{}
+			bodyMap[nativeParamReasoning] = r
+		}
+		r["enabled"] = on
+		return true
+	}
+	return false
+}
+
+// TranslateReasoning rewrites a chat request body so the client's portable
+// reasoning_effort is expressed as the upstream-native thinking control the
+// target row advertises (e.g. chat_template_kwargs.enable_thinking). row is the
+// resolved upstream row's declaration; resolving which row a request targets
+// (model id, upstream identity, fallbacks) is the caller's job.
+//
+// It returns the body unchanged when:
+//   - the body is empty or not a JSON object;
+//   - row is nil or advertises no native reasoning parameter;
+//   - the client already set that native parameter (explicit native wins);
+//   - the client sent no reasoning_effort (intent Unset) — upstream default stands;
+//   - the row's `thinking` declares no type for the intent (Row.ThinkingTypes
+//     without "disabled" on an off request) — the upstream answers it as sent.
+//
+// When translation occurs, reasoning_effort is removed from the outgoing body:
+// it has been consumed and re-expressed natively, and a Qwen/vLLM upstream that
+// needs enable_thinking may reject the unknown OpenAI field.
+//
+// The re-expression is binary except on chat_template_kwargs, where a row that
+// declares Row.ReasoningEffortLevels also receives the graded depth as the
+// nested reasoning_effort (see resolveChatTemplateEffort). A row that declares
+// no levels stays binary, because the accepted level set differs per model
+// family and a template that validates its input rejects an unknown value.
+func TranslateReasoning(body []byte, row *Row) ([]byte, error) {
+	if len(body) == 0 {
+		return body, nil
+	}
+
+	// Eligibility check first — it needs only the row, not the body. Most models
+	// in a deployment advertise no native thinking toggle, so bail out before the
+	// decode/allocate to keep this a cheap no-op on the bulk of chatbot traffic
+	// (mirrors TranslateMaxTokens's supportsMax==supportsCompletion early return).
+	nativeParam := NativeReasoningParam(row)
+	if nativeParam == "" {
+		return body, nil
+	}
+
+	// UseNumber so large integer fields (e.g. a client-supplied `seed` above 2^53)
+	// survive the decode→encode round-trip intact instead of being silently mangled
+	// through float64. Mirrors TranslateMaxTokens / Strip/InjectBodyFields.
+	var bodyMap map[string]interface{}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	// A literal JSON `null` decodes to a nil map without error; treat it like a
+	// non-object body and forward unchanged.
+	if err := dec.Decode(&bodyMap); err != nil || bodyMap == nil {
+		// Non-JSON request: leave as-is, consistent with the other body rewriters.
+		return body, nil
+	}
+
+	// Explicit native parameter wins: the client addressed the upstream directly,
+	// so forward it untouched and do not derive from reasoning_effort.
+	if nativeReasoningParamSet(bodyMap, nativeParam) {
+		return body, nil
+	}
+
+	effort, _ := bodyMap[reasoningEffortKey].(string)
+	intent := normalizeReasoningEffort(effort)
+	if intent == reasoningUnset {
+		return body, nil
+	}
+
+	// Graded depth only applies to a thinking-on request: an off request is fully
+	// expressed by the dialect's own toggle, and no level means "no reasoning".
+	var chatTemplateEffort string
+	if intent == reasoningOn && nativeParam == nativeParamChatTemplateKwargs {
+		chatTemplateEffort = resolveChatTemplateEffort(effort, row.ReasoningEffortLevels)
+	}
+	// The `thinking` object's type values are per model (MiniMax-M3 rejects the
+	// "enabled" other models take), so resolve them from the model's declaration.
+	var thinkingType string
+	if nativeParam == nativeParamThinking {
+		thinkingType = resolveThinkingType(intent == reasoningOn, row.ThinkingTypes)
+	}
+
+	if !applyNativeReasoning(bodyMap, nativeParam, intent == reasoningOn, chatTemplateEffort, thinkingType) {
+		// Nothing written: the model declares no `thinking` type for this intent
+		// (it cannot turn thinking off), or a recognized name has no apply case
+		// (should not happen while detection and the switch stay in sync). Leave
+		// the body untouched rather than stripping reasoning_effort without a
+		// replacement, so the upstream answers the request as the client sent it.
+		return body, nil
+	}
+	// reasoning_effort has been re-expressed natively; drop it so a vLLM-style
+	// upstream that only understands the native control doesn't reject it.
+	delete(bodyMap, reasoningEffortKey)
+
+	modified, err := json.Marshal(bodyMap)
+	if err != nil {
+		return body, fmt.Errorf("failed to marshal reasoning-translated body: %w", err)
+	}
+	return modified, nil
+}
