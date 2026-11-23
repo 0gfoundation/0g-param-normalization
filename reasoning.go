@@ -228,7 +228,7 @@ func resolveThinkingType(on bool, declared []string) string {
 // the broker can translate into (chat_template_kwargs / enable_thinking / thinking /
 // reasoning) but not the portable "reasoning_effort" itself, reasoning_effort is
 // appended so OpenAI-schema clients discover they can use it — the broker accepts
-// it via translation (see TranslateReasoning). formats is the model's
+// it via translation (see translateReasoning). formats is the model's
 // SupportedFormats: a "thinking" advertisement on the Anthropic surface is not
 // counted (see requiresAnthropicBudgetTokens) since the broker cannot translate it.
 //
@@ -258,12 +258,12 @@ func AdvertisedSupportedParameters(params []string, formats []string) []string {
 	return append(out, reasoningEffortKey)
 }
 
-// NativeReasoningParam returns the upstream-native thinking control the row
+// nativeReasoningParam returns the upstream-native thinking control the row
 // advertises in SupportedParameters (e.g. "enable_thinking"), or "" if it
 // advertises none that can be translated to (or row is nil). A "thinking"
 // advertisement on the Anthropic surface is skipped — see
 // requiresAnthropicBudgetTokens.
-func NativeReasoningParam(row *Row) string {
+func nativeReasoningParam(row *Row) string {
 	if row == nil {
 		return ""
 	}
@@ -382,7 +382,7 @@ func applyNativeReasoning(bodyMap map[string]interface{}, nativeParam string, on
 	return false
 }
 
-// TranslateReasoning rewrites a chat request body so the client's portable
+// translateReasoning rewrites a chat request body so the client's portable
 // reasoning_effort is expressed as the upstream-native thinking control the
 // target row advertises (e.g. chat_template_kwargs.enable_thinking). row is the
 // resolved upstream row's declaration; resolving which row a request targets
@@ -405,18 +405,18 @@ func applyNativeReasoning(bodyMap map[string]interface{}, nativeParam string, on
 // nested reasoning_effort (see resolveChatTemplateEffort). A row that declares
 // no levels stays binary, because the accepted level set differs per model
 // family and a template that validates its input rejects an unknown value.
-func TranslateReasoning(body []byte, row *Row) ([]byte, error) {
+func translateReasoning(body []byte, row *Row) ([]byte, []Change, error) {
 	if len(body) == 0 {
-		return body, nil
+		return body, nil, nil
 	}
 
 	// Eligibility check first — it needs only the row, not the body. Most models
 	// in a deployment advertise no native thinking toggle, so bail out before the
 	// decode/allocate to keep this a cheap no-op on the bulk of chatbot traffic
 	// (mirrors TranslateMaxTokens's supportsMax==supportsCompletion early return).
-	nativeParam := NativeReasoningParam(row)
+	nativeParam := nativeReasoningParam(row)
 	if nativeParam == "" {
-		return body, nil
+		return body, nil, nil
 	}
 
 	// UseNumber so large integer fields (e.g. a client-supplied `seed` above 2^53)
@@ -429,19 +429,19 @@ func TranslateReasoning(body []byte, row *Row) ([]byte, error) {
 	// non-object body and forward unchanged.
 	if err := dec.Decode(&bodyMap); err != nil || bodyMap == nil {
 		// Non-JSON request: leave as-is, consistent with the other body rewriters.
-		return body, nil
+		return body, nil, nil
 	}
 
 	// Explicit native parameter wins: the client addressed the upstream directly,
 	// so forward it untouched and do not derive from reasoning_effort.
 	if nativeReasoningParamSet(bodyMap, nativeParam) {
-		return body, nil
+		return body, nil, nil
 	}
 
 	effort, _ := bodyMap[reasoningEffortKey].(string)
 	intent := normalizeReasoningEffort(effort)
 	if intent == reasoningUnset {
-		return body, nil
+		return body, nil, nil
 	}
 
 	// Graded depth only applies to a thinking-on request: an off request is fully
@@ -463,7 +463,7 @@ func TranslateReasoning(body []byte, row *Row) ([]byte, error) {
 		// (should not happen while detection and the switch stay in sync). Leave
 		// the body untouched rather than stripping reasoning_effort without a
 		// replacement, so the upstream answers the request as the client sent it.
-		return body, nil
+		return body, nil, nil
 	}
 	// reasoning_effort has been re-expressed natively; drop it so a vLLM-style
 	// upstream that only understands the native control doesn't reject it.
@@ -471,7 +471,7 @@ func TranslateReasoning(body []byte, row *Row) ([]byte, error) {
 
 	modified, err := json.Marshal(bodyMap)
 	if err != nil {
-		return body, fmt.Errorf("failed to marshal reasoning-translated body: %w", err)
+		return body, nil, fmt.Errorf("failed to marshal reasoning-translated body: %w", err)
 	}
-	return modified, nil
+	return modified, []Change{{Param: reasoningEffortKey, Action: ActionTranslated, To: nativeParam}}, nil
 }

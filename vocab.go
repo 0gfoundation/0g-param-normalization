@@ -81,3 +81,7 @@ func IsReasoningEffortLevel(level string) bool {
 	_, ok := ReasoningEffortRank(level)
 	return ok
 }
+
+// RequestProfileSGLang is the Row.RequestProfile of an upstream served by
+// SGLang; see requestProfiles for what it drops.
+const RequestProfileSGLang = "sglang"

@@ -22,6 +22,29 @@ Design: 0g-router#1536.
 
 Unknown parameters and values are treated as reject / avoid.
 
+## Usage
+
+One entry point does all parameter handling for one upstream row:
+
+```go
+res, err := paramnorm.Normalize(
+	paramnorm.Request{Body: body, Format: paramnorm.APIFormatOpenAI},
+	row, // *paramnorm.Row: the declaration of the row the request goes to
+	paramnorm.Options{Translate: paramnorm.On, CapOutput: paramnorm.On},
+)
+// res.Body: the body to send
+// res.Applied: what was changed (for response headers / trace)
+// res.Skipped: what a DryRun category would have changed
+```
+
+Each category (`Translate`, `Drop`, `CapOutput`) is `Off`, `DryRun` or `On`,
+so every enforcement point turns categories on one at a time, and can measure
+first. The zero `Options` changes nothing. The order of the steps is fixed
+inside the library. Resolving which row a request targets is the caller's job.
+
+`AdvertisedSupportedParameters` is the one other export: what a row lists in
+`/v1/models`.
+
 ## Rules
 
 Rules are keyed by row and record a status per parameter value: supported,
