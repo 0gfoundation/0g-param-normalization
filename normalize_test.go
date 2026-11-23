@@ -2,6 +2,7 @@ package paramnorm
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -139,8 +140,8 @@ func TestNormalize_CapRunsBeforeRename(t *testing.T) {
 		t.Fatalf("body = %s, want the capped value under the accepted spelling", res.Body)
 	}
 	want := []Change{
-		{Param: "max_tokens", Action: ActionCapped, To: "4096"},
-		{Param: "max_tokens", Action: ActionTranslated, To: "max_completion_tokens"},
+		{Step: StepCapOutput, Param: "max_tokens", Action: ActionCapped, To: "4096"},
+		{Step: StepMaxTokens, Param: "max_tokens", Action: ActionTranslated, To: "max_completion_tokens"},
 	}
 	if !reflect.DeepEqual(res.Applied, want) {
 		t.Errorf("Applied = %+v, want %+v", res.Applied, want)
@@ -160,7 +161,7 @@ func TestNormalize_CategoriesAreIndependent(t *testing.T) {
 	if string(res.Body) != `{"chat_template_kwargs":{"enable_thinking":true},"max_tokens":100000}` {
 		t.Errorf("body = %s, want reasoning translated and max_tokens left as sent", res.Body)
 	}
-	want := []Change{{Param: "reasoning_effort", Action: ActionTranslated, To: "chat_template_kwargs"}}
+	want := []Change{{Step: StepReasoning, Param: "reasoning_effort", Action: ActionTranslated, To: "chat_template_kwargs"}}
 	if !reflect.DeepEqual(res.Applied, want) {
 		t.Errorf("Applied = %+v, want %+v", res.Applied, want)
 	}
@@ -194,8 +195,44 @@ func TestNormalize_NotInjectedIsReportedOnly(t *testing.T) {
 	if !bytes.Equal(res.Body, body) {
 		t.Errorf("body changed to %s", res.Body)
 	}
-	want := []Change{{Param: "max_tokens", Action: ActionNotInjected, To: "8192"}}
+	want := []Change{{Step: StepCapOutput, Param: "max_tokens", Action: ActionNotInjected, From: "16", To: "8192"}}
 	if !reflect.DeepEqual(res.Applied, want) {
 		t.Errorf("Applied = %+v, want %+v", res.Applied, want)
+	}
+}
+
+// An encoding failure in an On category fails the request with a *StepError
+// naming the step, keeping the step's own text; in a DryRun category it is
+// ignored (DryRun changes nothing) and the step's changes are still reported.
+// No real body reaches json.Marshal's error path, so the steps are faked.
+func TestRunSteps_Errors(t *testing.T) {
+	body := []byte(`{"a":1}`)
+	boom := errors.New("failed to marshal x body: boom")
+	failing := func(b []byte) ([]byte, []Change, error) {
+		return b, []Change{{Param: "p", Action: ActionDropped, From: "v"}}, boom
+	}
+	rewrite := func(b []byte) ([]byte, []Change, error) {
+		return []byte(`{"a":2}`), []Change{{Param: "a", Action: ActionCapped, To: "2"}}, nil
+	}
+
+	res, err := runSteps(body, []step{{StepCapOutput, On, rewrite}, {StepRequestProfile, On, failing}})
+	var se *StepError
+	if !errors.As(err, &se) || se.Step != StepRequestProfile || err.Error() != boom.Error() || !errors.Is(err, boom) {
+		t.Fatalf("On: err = %#v, want *StepError{request_profile} with the step's text", err)
+	}
+	if !bytes.Equal(res.Body, body) || res.Applied != nil || res.Skipped != nil {
+		t.Errorf("On: result = %+v, want the input body and nothing reported", res)
+	}
+
+	res, err = runSteps(body, []step{{StepCapOutput, On, rewrite}, {StepRequestProfile, DryRun, failing}})
+	if err != nil {
+		t.Fatalf("DryRun: err = %v, want nil", err)
+	}
+	if string(res.Body) != `{"a":2}` {
+		t.Errorf("DryRun: body = %s, want the On step's rewrite kept", res.Body)
+	}
+	want := []Change{{Step: StepRequestProfile, Param: "p", Action: ActionDropped, From: "v"}}
+	if !reflect.DeepEqual(res.Skipped, want) {
+		t.Errorf("DryRun: Skipped = %+v, want %+v", res.Skipped, want)
 	}
 }

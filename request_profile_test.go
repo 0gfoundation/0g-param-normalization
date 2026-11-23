@@ -101,7 +101,7 @@ func TestApplyRequestProfile_LogOnlyLeavesBody(t *testing.T) {
 	if !bytes.Equal(res.Body, body) {
 		t.Errorf("log-only mode changed the body to %s", res.Body)
 	}
-	if len(res.Skipped) != 1 || res.Skipped[0] != (Change{Param: "thinking.display", Action: ActionDropped, From: "updates"}) {
+	if len(res.Skipped) != 1 || res.Skipped[0] != (Change{Step: StepRequestProfile, Param: "thinking.display", Action: ActionDropped, From: "updates"}) {
 		t.Errorf("log-only mode reported %+v, want the would-be drop of thinking.display", res.Skipped)
 	}
 }

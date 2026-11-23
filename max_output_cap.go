@@ -168,14 +168,16 @@ func capMaxOutputTokens(body []byte, row *Row) ([]byte, []Change, error) {
 		// whose maxCompletionTokens is a large fraction of its context length would
 		// turn a long prompt that used to work into an upstream 400.
 		key := injectionKey(row)
-		if injected := injectableOutputCap(row, limit, promptTextBytes(body)); injected > 0 {
+		promptBytes := promptTextBytes(body)
+		if injected := injectableOutputCap(row, limit, promptBytes); injected > 0 {
 			bodyMap[key] = injected
 			changes = append(changes, Change{Param: key, Action: ActionInjected, To: strconv.FormatInt(injected, 10)})
 		} else {
 			// Fail open, and say so: "configured but never applied" is otherwise
 			// indistinguishable from "applied and the client asked for less".
 			// Reported only; the body is not changed for it.
-			changes = append(changes, Change{Param: key, Action: ActionNotInjected, To: strconv.FormatInt(limit, 10)})
+			changes = append(changes, Change{Param: key, Action: ActionNotInjected,
+				From: strconv.FormatInt(promptBytes/bytesPerToken, 10), To: strconv.FormatInt(limit, 10)})
 		}
 	}
 	if !bodyChanged(changes) {
@@ -184,7 +186,7 @@ func capMaxOutputTokens(body []byte, row *Row) ([]byte, []Change, error) {
 
 	modified, err := json.Marshal(bodyMap)
 	if err != nil {
-		return body, nil, fmt.Errorf("failed to marshal output-capped body: %w", err)
+		return body, changes, fmt.Errorf("failed to marshal output-capped body: %w", err)
 	}
 	return modified, changes, nil
 }

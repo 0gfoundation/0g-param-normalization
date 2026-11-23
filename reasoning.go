@@ -469,9 +469,10 @@ func translateReasoning(body []byte, row *Row) ([]byte, []Change, error) {
 	// upstream that only understands the native control doesn't reject it.
 	delete(bodyMap, reasoningEffortKey)
 
+	changes := []Change{{Param: reasoningEffortKey, Action: ActionTranslated, To: nativeParam}}
 	modified, err := json.Marshal(bodyMap)
 	if err != nil {
-		return body, nil, fmt.Errorf("failed to marshal reasoning-translated body: %w", err)
+		return body, changes, fmt.Errorf("failed to marshal reasoning-translated body: %w", err)
 	}
-	return modified, []Change{{Param: reasoningEffortKey, Action: ActionTranslated, To: nativeParam}}, nil
+	return modified, changes, nil
 }
