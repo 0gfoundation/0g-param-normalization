@@ -3,7 +3,7 @@ package paramnorm
 // Row is what the library needs to know about one upstream row (model ×
 // upstream identity). It carries only the declaration fields the translation
 // functions read; callers map their own config onto it (the broker from
-// config.ModelInfo, the router and gateway from the rules data).
+// config.ModelInfo, the router from the rules data).
 //
 // A nil *Row means "no declaration": every function treats it as advertising
 // nothing and leaves the request unchanged.
