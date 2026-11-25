@@ -12,7 +12,7 @@
 // template kwargs beyond the thinking switches, a pickled logit processor, a
 // LoRA path): a security step that does not depend on the upstream row.
 //
-// The router (plaintext requests), the E2EE gateway (encrypted requests) and the
-// serving broker (fallback for encrypted requests) import the same version, so
-// the rules are defined once. This module depends only on the standard library.
+// The router (plaintext requests) and the serving broker (encrypted requests,
+// after decrypting) import the same version, so the rules are defined once.
+// This module depends only on the standard library.
 package paramnorm

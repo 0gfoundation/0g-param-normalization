@@ -6,11 +6,11 @@ value, used by every enforcement point.
 
 | Consumer | Handles |
 |---|---|
-| 0G router | plaintext requests: route around unsupported upstreams, rewrite, reject |
-| E2EE gateway | encrypted requests: same, inside the TEE, before sealing |
-| serving broker | fallback rewrite for encrypted requests from older clients |
+| 0G router | plaintext requests: route around unsupported upstreams, rewrite, reject; encrypted requests: route on their cleartext parameters and the gateway's type signals, never rewrite |
+| serving broker | encrypted requests: rewrite after decrypting, inside the TEE |
 
-Design: 0g-router#1536.
+The E2EE gateway does not use this library: it seals the request and sends the
+router type-only signals for the sealed fields it routes on.
 
 ## Handling categories
 
@@ -57,10 +57,9 @@ admission probes plus human review.
 
 ## Constraints
 
-- Standard library only (CI enforces it): the E2EE gateway compiles this into a
-  measured image.
-- Consumers pin a released version; the version and rules-data hash travel with
-  each processed request so downstream points can skip duplicate work.
+- Standard library only (CI enforces it), so importing it never pulls a
+  dependency into the router or the broker (a TEE image).
+- Consumers pin a released version.
 
 ## Development
 
