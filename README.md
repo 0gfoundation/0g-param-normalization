@@ -51,9 +51,91 @@ other entry points.
 
 ## Rules
 
-Rules are keyed by row and record a status per parameter value: supported,
-rejected, ignored, translate-to, or unknown (treated as rejected). They come from
-admission probes plus human review.
+Rules record, per row and per parameter value, one of: supported, rejected,
+ignored (accepted, no effect), translate (to a translation defined in this
+library), or nothing (unknown, treated as rejected). They come from collected
+provider capabilities, admission probes and human review.
+
+The data is JSON (`rules/builtin.json` is compiled in):
+
+```json
+{"schema": 1, "version": 2, "env": "mainnet",
+ "families": [{"identity": "*", "models": "gpt-5*", "params": {"max_tokens": {"limits": {"min": 16}}}},
+              {"identity": "up1", "models": "gpt-5*", "params": {"top_k": "rejected"}}],
+ "rows": [{"identity": "up1", "model": "gpt-5.1", "params": {
+   "tool_choice": {"auto": "supported", "required": "ignored"},
+   "reasoning_effort": {"none": "translate:enable_thinking"},
+   "max_tokens": {"limits": {"max": 65536}}}}]}
+```
+
+- A row is (upstream identity, model); a row that publishes no identity is
+  named by `address` alone.
+- A row entry may name an `endpoint` (`chat`, `messages`, `responses`): a
+  supply line's conversion layer can make one row serve a parameter on one
+  endpoint and not another. `Lookup` / `Limits` take the request's endpoint
+  (required; anything else answers unknown); in each row layer the entries
+  for every endpoint apply first, then those naming the request's endpoint.
+  Families hold for every endpoint. How a conversion layer combines with the
+  vendor's capability is computed by the generator that writes the rules
+  (one entry per row and endpoint), not by layering in the bundle. A
+  lower layer's answer is inherited and cannot be cleared, so when rows share
+  (identity, model), each row's final answer goes on its own `address`
+  entries.
+- `ForRow(row, endpoint)` merges a row's families once; Plan asks it for every
+  parameter of a request.
+- Families give defaults by model-id pattern (`*` matches any characters);
+  `"identity": "*"` families hold on every upstream and apply first. Among
+  matching families of one layer the most specific pattern decides (two
+  points per literal character, less one per `*`: an exact id beats `id*`,
+  which beats `*id*`), so the order they are written in never matters; equally specific ones that disagree give
+  unknown. A row's own rules override families; an optional `address` layer
+  overrides those (for a row that publishes an identity, an address rule must
+  name it too). Limits layer bound by bound.
+  Several `site`s of one row are intersected: a status holds only if every
+  site has it (a site without its own rule inherits the layer below).
+- The parameters, value classes and translations rules may name are a fixed
+  table in code (`rules_catalog.go`), down to which translations each value
+  may use (`none` can only become a native thinking-off switch). It covers the
+  Chat Completions, Anthropic Messages and Responses spellings (`stop_sequences`,
+  `text.format`, `reasoning.effort`, ...); `CategoryOf` / `CategoryOfValue`
+  give each parameter's handling (request structure such as `messages` or
+  `stream` reports `structural`; `IsContainer` names the objects such as
+  `reasoning` whose members are judged as `reasoning.effort`), and the passthrough ones (`user`, `store`,
+  `metadata`, `prompt_cache_key`) cannot be named by rules at all. Only
+  `none` (and `thinking: disabled`) turn thinking off; `minimal` is the
+  lowest level. Anything
+  else fails to load, as do duplicate keys, rows, sites and families, keys
+  that are not lower-case and any backslash escape, so rule data can never target `messages`, `model`, media,
+  engine controls or any other field, and reads the same to a reviewer as to
+  the parser. (A translation such as `enable_thinking` does write into the
+  engine's thinking switch: that is code in this library, picked by name,
+  never a field the data chooses.)
+- `Store` serves the rules in force: `NewStore(BuiltinRules(),
+  StoreOptions{Env, MinVersion})`, then `Load` a signed bundle (the caller
+  supplies the `Verifier`, e.g. EIP-191) or `LoadUnsigned` one it already
+  trusts. A loaded bundle replaces the rules in force as a whole (built-in
+  family defaults included: a bundle repeats the families it needs). It must
+  validate, name the store's `env` exactly (a
+  staging bundle never loads on mainnet), carry a higher `version` than the
+  bundle loaded before it and be at least `MinVersion`; on any failure the
+  rules in force stay. The built-in rules (`"env": "any"`) take no part in the
+  version check, so a library upgrade never locks out signed bundles, and are
+  not served when their version is below `MinVersion`: the store then serves
+  nothing (every value unknown) until a bundle at the floor arrives, so a
+  restart cannot bring back rules the floor retired. The caller keeps `Env`
+  and `MinVersion` in trusted configuration, and raises `MinVersion` with a
+  library upgrade whose built-in rules must not be replaced by older signed
+  bundles. `Ruleset.Hash` is the bundle's
+  SHA-256, for logs.
+- A second Store (the router's supply-line rules) starts from `EmptyRules()`,
+  not the built-in broker rules. The output cap is one per row: only
+  `max_tokens` carries limits (even on a row that rejects the `max_tokens`
+  spelling), and `Limits` answers `max_completion_tokens` /
+  `max_output_tokens` from it.
+- A container field (`thinking`, `reasoning`, ...) sent as anything but a
+  JSON object (or null, which counts as not sent) is unknown and refused.
+- `rules/builtin.json` is public: only models already listed in the public
+  mainnet `/v1/providers` belong in it.
 
 ## Constraints
 

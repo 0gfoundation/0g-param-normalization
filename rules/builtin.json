@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "version": 1,
+  "env": "any",
+  "note": "No rules yet: every parameter value is unknown (treated as rejected by callers that enforce). Real data lands once provider capabilities are collected. Only models already listed in the public mainnet /v1/providers may appear here; rules for preview or unreleased models stay out of this public repository (signed delivery to brokers, the router's private rules).",
+  "families": [],
+  "rows": []
+}
