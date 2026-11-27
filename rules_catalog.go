@@ -1,6 +1,9 @@
 package paramnorm
 
-import "slices"
+import (
+	"maps"
+	"slices"
+)
 
 // Category is how a parameter is handled when a row cannot serve a value of it
 // as sent (see the package documentation).
@@ -388,4 +391,50 @@ func (s paramSpec) translationsFor(class string) []string {
 		return t
 	}
 	return s.translations
+}
+
+// ParamInfo describes one catalog parameter, for tools outside the library
+// (the supply-line rule generator, which derives new-api's cap list from
+// rules) that must use the same table rather than a copy of it.
+type ParamInfo struct {
+	Category Category `json:"category"`
+	// Classes are the value classes rules may give a status to (none for a
+	// passthrough parameter).
+	Classes []string `json:"classes,omitempty"`
+	// ClassCategory holds the classes handled apart from Category.
+	ClassCategory map[string]Category `json:"class_category,omitempty"`
+	// Translations lists, per class, the translations a rule may name.
+	Translations map[string][]string `json:"translations,omitempty"`
+	// Limits: rules may give the parameter a numeric range.
+	Limits bool `json:"limits,omitempty"`
+}
+
+// Catalog returns a copy of the parameter table, plus the structural and
+// container field names (never judged by rules).
+func Catalog() (params map[string]ParamInfo, structuralFields, containerFields []string) {
+	params = make(map[string]ParamInfo, len(catalog))
+	for name, s := range catalog {
+		info := ParamInfo{Category: s.category, Classes: slices.Clone(s.classes), Limits: s.limits}
+		if len(s.classCategory) > 0 {
+			info.ClassCategory = maps.Clone(s.classCategory)
+		}
+		for _, c := range s.classes {
+			if t := s.translationsFor(c); len(t) > 0 {
+				if info.Translations == nil {
+					info.Translations = map[string][]string{}
+				}
+				info.Translations[c] = slices.Clone(t)
+			}
+		}
+		params[name] = info
+	}
+	for f := range structural {
+		structuralFields = append(structuralFields, f)
+	}
+	for f := range containers {
+		containerFields = append(containerFields, f)
+	}
+	slices.Sort(structuralFields)
+	slices.Sort(containerFields)
+	return params, structuralFields, containerFields
 }
