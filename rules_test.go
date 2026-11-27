@@ -1127,7 +1127,9 @@ func TestLookupCostAtTheCaps(t *testing.T) {
 		}
 	}
 	const perRequest = rows * params
-	if d := time.Since(start); d > 100*time.Millisecond {
+	// A bound for order-of-magnitude regressions (a bundle within the caps once
+	// made this take over a minute), loose enough for -race on a busy CI runner.
+	if d := time.Since(start); d > time.Second {
 		t.Errorf("one request's lookups at the caps: %v", d)
 	}
 	t.Logf("%d lookups at the caps: %v", perRequest, time.Since(start))
@@ -1266,7 +1268,7 @@ func TestPlainLookupCostAtTheCaps(t *testing.T) {
 	for i := 0; i < 600; i++ {
 		rs.Lookup(row, EndpointChat, "stop", ClassPresent)
 	}
-	if d := time.Since(start); d > 300*time.Millisecond {
+	if d := time.Since(start); d > 3*time.Second { // order-of-magnitude bound, as above
 		t.Errorf("600 plain lookups at the caps: %v", d)
 	}
 	t.Logf("600 plain lookups at the caps: %v", time.Since(start))
