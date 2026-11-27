@@ -134,6 +134,10 @@ The data is JSON (`rules/builtin.json` is compiled in):
   `max_output_tokens` from it.
 - A container field (`thinking`, `reasoning`, ...) sent as anything but a
   JSON object (or null, which counts as not sent) is unknown and refused.
+- `go run github.com/0gfoundation/0g-param-normalization/cmd/rules-check
+  [-env ENV] FILE...` validates bundles exactly as a Store would load them;
+  `-catalog` prints the parameter table as JSON (`Catalog()`), so tools that
+  generate rules use this table, not a copy.
 - `rules/builtin.json` is public: only models already listed in the public
   mainnet `/v1/providers` belong in it.
 

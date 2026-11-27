@@ -1518,3 +1518,20 @@ func TestRound15Gaps(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalogExportIsACopy(t *testing.T) {
+	params, structuralFields, containerFields := Catalog()
+	if len(params) != len(catalog) || len(structuralFields) != len(structural) || len(containerFields) != len(containers) {
+		t.Fatalf("sizes: %d/%d %d/%d %d/%d", len(params), len(catalog), len(structuralFields), len(structural), len(containerFields), len(containers))
+	}
+	p := params["tool_choice"]
+	p.Classes[0] = "x"
+	p.ClassCategory["auto"] = CategoryReject
+	again, _, _ := Catalog()
+	if again["tool_choice"].Classes[0] == "x" || again["tool_choice"].ClassCategory["auto"] != CategoryDrop {
+		t.Fatal("Catalog shares the table")
+	}
+	if c, _ := CategoryOfValue("tool_choice", "auto"); c != CategoryDrop {
+		t.Fatal("the catalog changed through the export")
+	}
+}
