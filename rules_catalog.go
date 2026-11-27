@@ -160,14 +160,24 @@ var outputFormatClasses = []string{"text", "json_object", "json_schema", "json_s
 // "custom", is "function"); OpenAI "custom" (freeform grammar tools);
 // Responses "local_shell";
 // every provider-run tool ("hosted": Responses web_search, file_search,
-// code_interpreter, computer_use_preview, image_generation, mcp; Anthropic
-// server tools such as web_search_*, code_execution_*).
+// code_interpreter, image_generation, mcp; Anthropic server tools such as
+// web_search_*, web_fetch_*, code_execution_*, tool_search_tool_*). Tools a
+// vendor defines but the client runs (Anthropic bash, text_editor, computer,
+// memory; Responses computer_use_preview, shell, apply_patch) have no class:
+// they are refused until the catalog gives them one.
 //
 // Anthropic tool_choice.disable_parallel_tool_use is judged as
 // parallel_tool_calls (true there is parallel_tool_calls false).
 //
 // service_tier in other spellings: Anthropic "auto" is "auto" and
-// "standard_only" is "default".
+// "standard_only" is "default". The default tier asks for nothing, so a
+// request sending it is classified as not sending service_tier. "auto" is
+// judged: it lets the vendor use priority capacity, billed differently.
+//
+// String values are compared as sent: Classify does not trim or fold case
+// ("HIGH" is no level), since an upstream may not. Normalize's own rewrite
+// path (vocab.go) folds reasoning_effort as the broker always has; Plan is the
+// stricter of the two.
 //
 // tool_choice classes in other spellings: Anthropic "any" is "required" and
 // {"type":"tool"} is "function"; Responses "none" / "auto" / "required" are
@@ -188,6 +198,11 @@ var outputFormatClasses = []string{"text", "json_object", "json_schema", "json_s
 //	drop             forward    rewrite+   drop and notify  drop and notify  forward as sent
 //
 // (rewrite+: rewrite and notify, D15.)
+//
+// The output cap's spellings (max_tokens, max_completion_tokens,
+// max_output_tokens) are the exception to "unknown avoids the row": every row
+// takes an output cap, so an unknown status forwards it and the row's limits
+// decide (D10). Plan (plan.go) implements this table.
 //
 // Under require_parameters every drop-class cell other than supported avoids
 // the row instead (D7). "ignored" on a value that is not dropped means the
