@@ -137,6 +137,27 @@ The data is JSON (`rules/builtin.json` is compiled in):
 - `rules/builtin.json` is public: only models already listed in the public
   mainnet `/v1/providers` belong in it.
 
+## Plan
+
+`Plan(rules, body, endpoint, rows, PlanOptions{RequireParameters, RefuseUnknownFields})`
+decides, for each candidate row, whether it can serve a request and what is
+translated or dropped there, without changing the body:
+
+- `Classify` lists the values the body carries in the catalog's terms (one
+  per parameter and value class), per endpoint spelling, leaving out values
+  that ask for nothing (null, empty lists, `logprobs: false`, `n: 1`, ...),
+  and the fields the catalog does not know.
+- `Decide` applies the status x category table in `rules_catalog.go` to each
+  value on each row: forward, rewrite (a named translation, to be notified),
+  drop (and notify), or avoid the row.
+- The output cap follows D10 across the candidates: rows whose cap is below
+  the request are avoided while another row fits; when none fits, each row
+  gets `TruncateTo`, its own cap.
+- When no row can serve the request, `Plan` returns `*RejectError`
+  (`unsupported_parameter`, D11) naming the value that blocked.
+
+A router in dry-run mode records the plan and routes as before.
+
 ## Constraints
 
 - Standard library only (CI enforces it), so importing it never pulls a
